@@ -1,210 +1,188 @@
-const { createCanvas } = require("canvas");
+const functions = require("firebase-functions");
 const express = require("express");
-const bodyParser = require("body-parser");
+const cookieParser = require("cookie-parser");
+const firebase = require("firebase/app");
 const admin = require("firebase-admin");
-
 const serviceAccount = require("./firebase_service_account.json");
+const {
+  getAuth,
+  createUserWithEmailAndPassword,
+  signInWithEmailAndPassword,
+  signOut,
+  sendEmailVerification,
+  sendPasswordResetEmail,
+} = require("firebase/auth");
+
+require("dotenv").config();
 
 const app = express();
-app.use(bodyParser.json()); // Parse JSON bodies
 
-// Initialize Firebase Admin SDK
+app.use(express.json());
+app.use(cookieParser());
+
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
-  storageBucket: "gs://inbound-decker-441613-s6.firebasestorage.app", // Replace with your storage bucket URL
 });
 
-const bucket = admin.storage().bucket();
+const firebaseConfig = {
+  apiKey: process.env.API_KEY,
+  authDomain: process.env.AUTH_DOMAIN,
+  projectId: process.env.PROJECT_ID,
+  storageBucket: process.env.STORAGE_BUCKET,
+  messagingSenderId: process.env.MESSAGING_SENDER,
+  appId: process.env.APP_ID,
+};
+firebase.initializeApp(firebaseConfig);
 
-/**
- * Uploading Image to firebase bucket
- */
+const auth = getAuth();
 
-// Generate image with initials
-function generateInitialsImage(
-  initials,
-  bgColor = "#007BFF",
-  textColor = "#FFFFFF"
-) {
-  const canvas = createCanvas(128, 128); // 128x128 image
-  const ctx = canvas.getContext("2d");
+class FirebaseAuthController {
+  async registerUser(req, res) {
+    const { name, email, password } = req.body;
+    if (!name || !email || !password) {
+      return res.status(422).json({
+        error: true,
+        message: "Name, email, and password are required",
+      });
+    }
+    try {
+      const userCredential = await createUserWithEmailAndPassword(
+        auth,
+        email,
+        password
+      );
+      const user = userCredential.user;
+      await admin.auth().updateUser(user.uid, {
+        displayName: name,
+        emailVerified: false,
+      });
+      await sendEmailVerification(user);
+      res.status(201).json({
+        error: false,
+        message: "User Created! Check email for verification",
+      });
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({
+        error: true,
+        message: error.message || "An error occurred while registering user",
+      });
+    }
+  }
 
-  // Draw background
-  ctx.fillStyle = bgColor;
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  async loginUser(req, res) {
+    const { email, password } = req.body;
+    if (!email || !password) {
+      return res.status(422).json({
+        error: true,
+        message: "Email and password are required",
+      });
+    }
+    try {
+      const userCredential = await signInWithEmailAndPassword(
+        auth,
+        email,
+        password
+      );
+      const idToken = userCredential._tokenResponse.idToken;
+      const { uid, displayName } = userCredential.user;
+      if (idToken) {
+        res.cookie("access_token", idToken, {
+          httpOnly: true,
+        });
+        res.status(200).json({
+          error: false,
+          message: "success",
+          loginResult: {
+            userId: uid,
+            name: displayName,
+            token: idToken,
+          },
+        });
+      } else {
+        res.status(500).json({
+          error: true,
+          message: "Internal Server Error",
+        });
+      }
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({
+        error: true,
+        message: error.message || "An error occurred while logging in",
+      });
+    }
+  }
 
-  // Draw initials
-  ctx.fillStyle = textColor;
-  ctx.font = "bold 64px Arial";
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  ctx.fillText(initials, canvas.width / 2, canvas.height / 2);
+  async logoutUser(req, res) {
+    try {
+      await signOut(auth);
+      res.clearCookie("access_token");
+      res.status(200).json({
+        error: false,
+        message: "User logged out successfully",
+      });
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({
+        error: true,
+        message: "Internal Server Error",
+      });
+    }
+  }
 
-  return canvas.toBuffer("image/png");
+  async resetPassword(req, res) {
+    const { email } = req.body;
+    if (!email) {
+      return res.status(422).json({
+        error: true,
+        message: "Email is required",
+      });
+    }
+    try {
+      await sendPasswordResetEmail(auth, email);
+      res.status(200).json({
+        error: false,
+        message: "Password reset email sent successfully!",
+      });
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({
+        error: true,
+        message: "Internal Server Error",
+      });
+    }
+  }
 }
 
-// Assuming `buffer` contains the image data (e.g., generated from Canvas)
-// const fileName = `profile-pictures/${Date.now()}_${initials}.png`;
-// const file = bucket.file(fileName);
-
-// const stream = file.createWriteStream({
-//   metadata: { contentType: "image/png" },
-// });
-
-// stream.end(buffer);
-
-// stream.on("finish", async () => {
-//   // Make the file publicly accessible
-//   await file.makePublic();
-//   const publicUrl = `https://storage.googleapis.com/${bucket.name}/${fileName}`;
-
-//   // Send the URL back to the client or save it to the user profile
-//   res.status(201).json({
-//     message: "Profile picture generated successfully",
-//     imageUrl: publicUrl,
-//   });
-// });
-
-/**
- * APIs
- */
-// Health check route
-app.get("/", (req, res) => {
-  res.send("API is running!");
-});
-
-app.post("/register", async (req, res) => {
-  const { email, password } = req.body;
-
-  try {
-    const user = await admin.auth().createUser({ email, password });
-    res.status(201).json({ message: "User registered successfully", user });
-  } catch (error) {
-    res.status(400).json({ error: error.message });
-  }
-});
-
-app.post("/login", async (req, res) => {
-  const { email, password } = req.body;
-
-  try {
-    // You can use Firebase Client SDK on the frontend to generate the token.
-    const user = await admin.auth().getUserByEmail(email);
-    res.status(200).json({ message: "Login successful", user });
-  } catch (error) {
-    res.status(400).json({ error: error.message });
-  }
-});
-
-app.post("/logout", async (req, res) => {
-  const { uid } = req.body;
-
-  try {
-    await admin.auth().revokeRefreshTokens(uid);
-    res.status(200).json({ message: "User logged out successfully" });
-  } catch (error) {
-    res.status(400).json({ error: error.message });
-  }
-});
-
-app.post("/forgot-password", async (req, res) => {
-  const { email } = req.body;
-
-  try {
-    const link = await admin.auth().generatePasswordResetLink(email);
-    res.status(200).json({ message: "Password reset link sent", link });
-  } catch (error) {
-    res.status(400).json({ error: error.message });
-  }
-});
-
-/**
- * SECURING API
- *
- * This methode used for securing the api
- */
-
 const verifyToken = async (req, res, next) => {
-  const token = req.headers.authorization?.split("Bearer ")[1];
-
-  if (!token) {
-    return res.status(401).json({ error: "Unauthorized" });
+  const idToken = req.cookies.access_token;
+  if (!idToken) {
+    return res.status(403).json({ error: "No token provided" });
   }
 
   try {
-    const decodedToken = await admin.auth().verifyIdToken(token);
+    const decodedToken = await admin.auth().verifyIdToken(idToken);
     req.user = decodedToken;
     next();
   } catch (error) {
-    res.status(403).json({ error: "Invalid token" });
+    console.error("Error verifying token:", error);
+    return res.status(403).json({ error: "Unauthorized" });
   }
 };
 
-/**
- * Verifying Token
- */
-app.get("/protected", verifyToken, (req, res) => {
-  res.status(200).json({ message: "Access granted", user: req.user });
+const router = express.Router();
+const firebaseAuthController = new FirebaseAuthController();
+
+router.post("/api/register", firebaseAuthController.registerUser);
+router.post("/api/login", firebaseAuthController.loginUser);
+router.post("/api/logout", firebaseAuthController.logoutUser);
+router.post("/api/reset-password", firebaseAuthController.resetPassword);
+
+app.use(router);
+
+app.get("/", (req, res) => {
+  res.send("API is running");
 });
 
-// API to generate and upload the initial image
-app.post("/generate-profile-picture", async (req, res) => {
-  const { name } = req.body;
-
-  if (!name) {
-    return res.status(400).json({ error: "Name is required" });
-  }
-
-  // Extract initials
-  const initials = name
-    .split(" ")
-    .map((word) => word[0].toUpperCase())
-    .join("")
-    .slice(0, 2); // Max 2 initials
-
-  try {
-    // Generate image buffer
-    const buffer = generateInitialsImage(initials);
-
-    // Define file name and path
-    const fileName = `profile-pictures/${Date.now()}_${initials}.png`;
-    const file = bucket.file(fileName);
-
-    // Upload to Firebase Storage
-    const stream = file.createWriteStream({
-      metadata: { contentType: "image/png" },
-    });
-
-    stream.end(buffer);
-
-    stream.on("finish", async () => {
-      // Make the file publicly accessible
-      await file.makePublic();
-      const publicUrl = `https://storage.googleapis.com/${bucket.name}/${fileName}`;
-
-      res.status(201).json({
-        message: "Profile picture generated successfully",
-        imageUrl: publicUrl,
-      });
-    });
-
-    stream.on("error", (error) => {
-      console.error(error);
-      res.status(500).json({ error: "Failed to upload profile picture" });
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-  // await admin.auth().updateUser(uid, {
-  //   photoURL: publicUrl,
-  // });
-});
-
-/**
- * Running the Server
- */
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
-});
+exports.app = functions.region("asia-southeast2").https.onRequest(app);

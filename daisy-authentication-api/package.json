@@ -18,10 +18,10 @@
   },
   "homepage": "https://github.com/hpdrr/cloud-computing#readme",
   "dependencies": {
-    "body-parser": "^1.20.3",
-    "canvas": "^2.11.2",
+    "dotenv": "^16.4.5",
     "express": "^4.21.1",
     "firebase": "^11.0.2",
-    "firebase-admin": "^13.0.1"
+    "firebase-admin": "^13.0.1",
+    "firebase-functions": "^6.1.1"
   }
 }
