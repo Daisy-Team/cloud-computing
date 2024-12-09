@@ -1,2 +1,6 @@
 .env
 model.h5
+node_modules/
+firestore-key.json
+venv
+uploads

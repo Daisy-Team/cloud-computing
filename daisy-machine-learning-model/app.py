@@ -7,6 +7,14 @@ from datetime import datetime
 from werkzeug.utils import secure_filename
 import io
 import os
+import firebase_admin
+from firebase_admin import credentials, firestore
+
+# Path ke file kredensial akun layanan
+cred = credentials.Certificate("firestore-key.json")
+firebase_admin.initialize_app(cred)
+
+db = firestore.client()
 
 app = Flask(__name__)
 
@@ -33,9 +41,9 @@ News
   c. host: http://127.0.0.1:5000 & endpoint /predict
 3. 
 Todo
-1. Sesuaikan classes dengan index yang merupakan output dari tim ML
-2. Periksa response dari postman untuk bagian rekomendasi obat
-3. Tolong koneksikan dengan firestore
+1. Sesuaikan classes dengan index yang merupakan output dari tim ML (done)
+2. Periksa response dari postman untuk bagian rekomendasi obat (done)
+3. Tolong koneksikan dengan firestore (done)
 4. [Opsional] Ubah classes menjadi index bases (menggunakan angka layaknya output dari tim ML)
 '''
 
@@ -44,24 +52,16 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
 classes = [
-  "Bisul",
   "Biduran",
-  "Jerawat",
+  "Bisul",
   "Cacar Air",
-  "Panu",
+  "Jerawat",
   "Kurap",
   "Normal",
+  "Panu",
 ]
 
 info = {
-  "Normal": {
-    "treatment" : "Kulit Anda dalam kondisi sehat. Jaga kebersihan kulit dengan rutin mandi dan gunakan pelembap yang sesuai dengan jenis kulit Anda.",
-    "medicine": [
-      {
-        "asd"
-      }
-    ]
-  },
   "Biduran": {
     "treatment": "Hindari alergen yang memicu biduran dan gunakan pakaian berbahan lembut.",
     "medicine": [
@@ -137,6 +137,14 @@ info = {
       },
     ]
   },
+  "Normal": {
+    "treatment" : "Kulit Anda dalam kondisi sehat. Jaga kebersihan kulit dengan rutin mandi dan gunakan pelembap yang sesuai dengan jenis kulit Anda.",
+    "medicine": [
+      {
+        "asd"
+      }
+    ]
+  },
   "Panu": {
     "treatment": "Jaga kulit tetap kering dan hindari berbagi handuk dengan orang lain.",
     "medicine": [
@@ -157,58 +165,63 @@ info = {
 # Load the model
 model = tf.keras.models.load_model('model.h5')
 
-# Routes
 @app.route('/predict', methods=['POST'])
 def predict():
-  try:
-    file = request.files['image']
-    
-    if 'image' not in request.files:
-      return jsonify({"error": "No image file uploaded"}), 400
-    
-    if file.filename == '':
-      return jsonify({"error": "No selected file"}), 400
-    
-    if model is None:
-      return jsonify({
-        'error': 'Model not found'
-      }), 500
-    
-    filename = secure_filename(file.filename)
-    filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-    
-    file.save(filepath)
-    image = Image.open(filepath).convert('RGB')
-    image = image.resize((224, 224))  # Resize to match your model's input size
-    image_array = np.array(image) / 255.0  # Normalize
-    image_tensor = np.expand_dims(image_array, axis=0)  # Add batch dimension
-    
-    # predictions
-    predictions = model.predict(image_tensor)
-    confidence = float(np.max(predictions)) * 100
-    class_index = np.argmax(predictions, axis=1)[0]
-    label = classes[class_index]
+    try:
+        file = request.files['image']
+        
+        if 'image' not in request.files:
+            return jsonify({"error": "No image file uploaded"}), 400
+        
+        if file.filename == '':
+            return jsonify({"error": "No selected file"}), 400
+        
+        if model is None:
+            return jsonify({
+                'error': 'Model not found'
+            }), 500
+        
+        filename = secure_filename(file.filename)
+        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        
+        file.save(filepath)
+        image = Image.open(filepath).convert('RGB')
+        image = image.resize((224, 224))  # Resize to match your model's input size
+        image_array = np.array(image) / 255.0  # Normalize
+        image_tensor = np.expand_dims(image_array, axis=0)  # Add batch dimension
+        
+        # predictions
+        predictions = model.predict(image_tensor)
+        confidence = float(np.max(predictions)) * 100
+        class_index = np.argmax(predictions, axis=1)[0]
+        label = classes[class_index]
 
-    treatment = info[label]["treatment"]
-    medicine = info[label]["medicine"]
+        treatment = info[label]["treatment"]
+        medicine = info[label]["medicine"]
 
-    id = str(uuid.uuid4())
-    createdAt = datetime.utcnow().isoformat()
-    os.remove(filepath)
+        id = str(uuid.uuid4())
+        createdAt = datetime.utcnow().isoformat()
+        os.remove(filepath)
 
-    return jsonify({
-      "id": id,
-      "label": label,
-      "confidence": confidence,
-      "treatment": treatment,
-      "medicine": medicine,
-      "createdAt": createdAt
-    }), 201
+        # Data yang akan dikirim ke Firestore
+        data = {
+            "id": id,
+            "label": label,
+            "confidence": confidence,
+            "treatment": treatment,
+            "medicine": medicine,
+            "createdAt": createdAt
+        }
 
-  except Exception as e:
-    return jsonify({
-      'error': str(e)
-    }), 500
+        # Simpan ke Firestore
+        db.collection('predictions').document(id).set(data)
+
+        return jsonify(data), 201
+
+    except Exception as e:
+        return jsonify({
+            'error': str(e)
+        }), 500
   
 @app.route('/health', methods=['GET'])
 def health():
